@@ -61,8 +61,8 @@ char reg2[16];
 char offsetwithreg[16];
 unsigned int data_address=0;
 unsigned int instruction_address=0;
-unsigned int pipeline_cycles=0;   // how many cycles did you pipeline consume
-unsigned int instruction_count=0; // home many real instructions ran thru the pipeline
+unsigned int pipeline_cycles=0;   // how many cycles did your pipeline consume
+unsigned int instruction_count=0; // how many real instructions ran thru the pipeline
 unsigned int branch_predict_taken=0;
 unsigned int branch_count=0;
 unsigned int correct_branch_predictions=0;
@@ -103,7 +103,6 @@ typedef struct branch
     
 } branch_t;
 
-
 typedef struct jump
 {
     char instruction[16];
@@ -136,7 +135,7 @@ pipeline_t pipeline[MAX_STAGES];
 /*
  * Correctly configure the cache.
  */
-void iplc_sim_init(int index, int blocksize, int assoc)
+void iplc_sim_init(int index, int blocksize, int assoc) //BRIAN
 {
     int i=0, j=0;
     unsigned long cache_size = 0;
@@ -180,7 +179,7 @@ void iplc_sim_init(int index, int blocksize, int assoc)
  * iplc_sim_trap_address() determined this is not in our cache.  Put it there
  * and make sure that is now our Most Recently Used (MRU) entry.
  */
-void iplc_sim_LRU_replace_on_miss(int index, int tag)
+void iplc_sim_LRU_replace_on_miss(int index, int tag) //BRIAN
 {
     /* You must implement this function */
 }
@@ -189,7 +188,7 @@ void iplc_sim_LRU_replace_on_miss(int index, int tag)
  * iplc_sim_trap_address() determined the entry is in our cache.  Update its
  * information in the cache.
  */
-void iplc_sim_LRU_update_on_hit(int index, int assoc_entry)
+void iplc_sim_LRU_update_on_hit(int index, int assoc_entry) //BRIAN
 {
     /* You must implement this function */
 }
@@ -200,7 +199,7 @@ void iplc_sim_LRU_update_on_hit(int index, int assoc_entry)
  * associativity we may need to check through multiple entries for our
  * desired index.  In that case we will also need to call the LRU functions.
  */
-int iplc_sim_trap_address(unsigned int address)
+int iplc_sim_trap_address(unsigned int address) //BRIAN
 {
     int i=0, index=0;
     int tag=0;
@@ -246,7 +245,7 @@ void iplc_sim_finalize()
 /*
  * Dump the current contents of our pipeline.
  */
-void iplc_sim_dump_pipeline()
+void iplc_sim_dump_pipeline() //DONE
 {
     int i;
     
@@ -278,7 +277,7 @@ void iplc_sim_dump_pipeline()
  * Check if various stages of our pipeline require stalls, forwarding, etc.
  * Then push the contents of our various pipeline stages through the pipeline.
  */
-void iplc_sim_push_pipeline_stage()
+void iplc_sim_push_pipeline_stage() //TYLER
 {
     int i;
     int data_hit=1;
@@ -292,24 +291,132 @@ void iplc_sim_push_pipeline_stage()
     }
     
     /* 2. Check for BRANCH and correct/incorrect Branch Prediction */
-    if (pipeline[DECODE].itype == BRANCH) {
+    if (pipeline[DECODE].itype == BRANCH)
+    {
+    	branch_count++; //hey, I found a branch!
         int branch_taken = 0;
+        if(pipeline[FETCH].instruction_address!=0 && (pipeline[FETCH].instruction_address -pipeline[DECODE].instruction_address != 4))
+        {
+        	branch_taken = 1;
+        }
+        //if the branch is not correctly predicted, add one cycle, push stages through (except for decode), and insert a nop
+		if (pipeline[FETCH].instruction_address != 0 && branch_taken != branch_predict_taken)
+		{
+			pipeline_cycles++;
+
+			memcpy(&pipeline[WRITEBACK], &pipeline[MEM], sizeof(pipeline_t)); //MEM->WB
+			memcpy(&pipeline[MEM], &pipeline[ALU], sizeof(pipeline_t));	//ALU->MEM
+			memcpy(&pipeline[ALU], &pipeline[DECODE], sizeof(pipeline_t));//DECODE->ALU
+
+			if (pipeline[WRITEBACK].instruction_address)
+			{
+				instruction_count++;
+			}
+
+			bzero(&(pipeline[DECODE]), sizeof(pipeline_t)); //this is where the NOP goes
+		}
+		//if the instruction address exists and is all dandy, then you correctly predicted a branch. Congrats!
+		else if (pipeline[FETCH].instruction_address != 0)
+		{
+			correct_branch_predictions++;
+		}
     }
     
+
     /* 3. Check for LW delays due to use in ALU stage and if data hit/miss
      *    add delay cycles if needed.
      */
-    if (pipeline[MEM].itype == LW) {
+    if (pipeline[MEM].itype == LW)
+    {
         int inserted_nop = 0;
+
+		//is the data in the cache?
+		data_hit = iplc_sim_trap_address(pipeline[MEM].stage.lw.data_address);
+
+		if (data_hit)
+		{
+			//if the data is in the cache, it's a hit. Print that.
+			printf("DATA HIT:\t Address 0x%x \n", pipeline[MEM].stage.lw.data_address);
+		}
+		else
+		{
+			//if not, it's a miss. Print that.
+			printf("DATA MISS:\t Address 0x%x \n", pipeline[MEM].stage.lw.data_address);
+
+			//cache missing has a delay, so we add almost all of those cycles here (one is still added in Step 5)
+			pipeline_cycles += CACHE_MISS_DELAY - 1;
+		}
+
+		//check if the ALU stage is an r-type instruction
+		//this could cause some memory conflicts
+		if (pipeline[ALU].itype == RTYPE)
+		{
+			//if so, we need to check more
+			int instructionLength = strlen(pipeline[ALU].stage.rtype.instruction);
+			// Is either reg in the ALU stage being used in the MEM stage?
+			if ((pipeline[ALU].stage.rtype.reg1 == pipeline[MEM].stage.lw.dest_reg) || ((pipeline[ALU].stage.rtype.reg2_or_constant == pipeline[MEM].stage.lw.dest_reg) && pipeline[ALU].stage.rtype.instruction[instructionLength - 1] != 'i'))
+			{
+				pipeline_cycles++; //tentatively add the cycle
+
+				//Moving the stuff from MEM into WB, to make room
+				memcpy(&pipeline[WRITEBACK], &pipeline[MEM], sizeof(pipeline_t));
+
+				//adding the NOP here
+				bzero(&(pipeline[MEM]), sizeof(pipeline_t));
+				inserted_nop = 1;
+
+				if (pipeline[WRITEBACK].instruction_address)
+				{
+					instruction_count++;
+				}
+			}
+		}
+		if (!data_hit && inserted_nop)
+		{
+			pipeline_cycles--; //we didn't actually take that cycle, so...
+		}
     }
     
-    /* 4. Check for SW mem acess and data miss .. add delay cycles if needed */
-    if (pipeline[MEM].itype == SW) {
+
+    /* 4. Check for SW mem access and data miss and add delay cycles if needed */
+    if (pipeline[MEM].itype == SW)
+    {
+        //Similar to step 3, is the data in the cache?
+        data_hit = iplc_sim_trap_address(pipeline[MEM].stage.sw.data_address);
+
+        if(data_hit)
+        {
+        	printf("DATA HIT:\t Address 0x%x \n",pipeline[MEM].stage.sw.data_address);
+        }
+        else
+        {
+        	//if we miss, print it
+        	printf("DATA MISS:\t Address 0x%x \n",pipeline[MEM].stage.sw.data_address);
+
+        	//and we need to add almost all of the miss delay, except for the one cycle in Step 5 below.
+            pipeline_cycles += CACHE_MISS_DELAY - 1;
+
+        }
     }
     
+
     /* 5. Increment pipe_cycles 1 cycle for normal processing */
-    /* 6. push stages thru MEM->WB, ALU->MEM, DECODE->ALU, FETCH->ALU */
+    pipeline_cycles++;
+
+
+    /* 6. push stages thru MEM->WB, ALU->MEM, DECODE->ALU, FETCH->DECODE */
+
+    //let me re-write that as: FETCH->DECODE->ALU->MEM->WB
+    //working backwards is the best way to avoid losing data
+
+    memcpy(&pipeline[WRITEBACK], &pipeline[MEM], sizeof(pipeline_t)); 	//MEM->WB
+    memcpy(&pipeline[MEM], &pipeline[ALU], sizeof(pipeline_t));			//ALU->MEM
+    memcpy(&pipeline[ALU], &pipeline[DECODE], sizeof(pipeline_t));		//DECODE->ALU
+    memcpy(&pipeline[DECODE], &pipeline[FETCH], sizeof(pipeline_t));	//FETCH->DECODE
     
+    //...and there's nothing prior to FETCH to put in, so we move on to step 7
+
+
     // 7. This is a give'me -- Reset the FETCH stage to NOP via bezero */
     bzero(&(pipeline[FETCH]), sizeof(pipeline_t));
 }
@@ -318,47 +425,84 @@ void iplc_sim_push_pipeline_stage()
  * This function is fully implemented.  You should use this as a reference
  * for implementing the remaining instruction types.
  */
-void iplc_sim_process_pipeline_rtype(char *instruction, int dest_reg, int reg1, int reg2_or_constant)
+void iplc_sim_process_pipeline_rtype(char *instruction, int dest_reg, int reg1, int reg2_or_constant) //DONE
 {
-    /* This is an example of what you need to do for the rest */
-    iplc_sim_push_pipeline_stage();
+    /* This is an example of what you need to do for the rest */ //Hi yes I'm writing in here to template stuff for myself
+    iplc_sim_push_pipeline_stage(); //Step 1: push stage
     
-    pipeline[FETCH].itype = RTYPE;
+    pipeline[FETCH].itype = RTYPE; //Step 2: set itype and instruction_address. This is the same among ALL instructions
     pipeline[FETCH].instruction_address = instruction_address;
     
-    strcpy(pipeline[FETCH].stage.rtype.instruction, instruction);
+    strcpy(pipeline[FETCH].stage.rtype.instruction, instruction); //Step 3: set instruction-specific variables. These are different between.
     pipeline[FETCH].stage.rtype.reg1 = reg1;
     pipeline[FETCH].stage.rtype.reg2_or_constant = reg2_or_constant;
     pipeline[FETCH].stage.rtype.dest_reg = dest_reg;
 }
 
-void iplc_sim_process_pipeline_lw(int dest_reg, int base_reg, unsigned int data_address)
+void iplc_sim_process_pipeline_lw(int dest_reg, int base_reg, unsigned int data_address) //TYLER
 {
+	iplc_sim_push_pipeline_stage(); //Step 1: push stage
+
+	pipeline[FETCH].itype = LW;		//Step 2: set itype and address
+	pipeline[FETCH].instruction_address = instruction_address;
+
+	pipeline[FETCH].stage.lw.base_reg = base_reg; //step 3: Copy specific variables/arguments
+	pipeline[FETCH].stage.lw.dest_reg = dest_reg;
+	pipeline[FETCH].stage.lw.data_address = data_address;
     /* You must implement this function */
 }
 
-void iplc_sim_process_pipeline_sw(int src_reg, int base_reg, unsigned int data_address)
+void iplc_sim_process_pipeline_sw(int src_reg, int base_reg, unsigned int data_address) //TYLER
 {
+	iplc_sim_push_pipeline_stage(); //Step 1: push stage
+
+	pipeline[FETCH].itype = SW;		//Step 2: set itype and address
+	pipeline[FETCH].instruction_address = instruction_address;
+
+	pipeline[FETCH].stage.sw.base_reg = base_reg; //step 3: Copy specific variables/arguments
+	pipeline[FETCH].stage.sw.src_reg = src_reg;
+	pipeline[FETCH].stage.sw.data_address = data_address;
     /* You must implement this function */
 }
 
-void iplc_sim_process_pipeline_branch(int reg1, int reg2)
+void iplc_sim_process_pipeline_branch(int reg1, int reg2) //TYLER
 {
+	iplc_sim_push_pipeline_stage(); //Step 1: push stage
+
+	pipeline[FETCH].itype = BRANCH;		//Step 2: set itype and address
+	pipeline[FETCH].instruction_address = instruction_address;
+
+	pipeline[FETCH].stage.branch.reg1 = reg1; //step 3: Copy specific variables/arguments
+	pipeline[FETCH].stage.branch.reg2 = reg2;
     /* You must implement this function */
 }
 
-void iplc_sim_process_pipeline_jump(char *instruction)
+void iplc_sim_process_pipeline_jump(char *instruction) //TYLER
 {
+	iplc_sim_push_pipeline_stage(); //Step 1: push stage
+
+	pipeline[FETCH].itype = JUMP;		//Step 2: set itype and address
+	pipeline[FETCH].instruction_address = instruction_address;
+
+	strcpy(pipeline[FETCH].stage.jump.instruction, instruction); //step 3: Copy specific variables/arguments
     /* You must implement this function */
 }
 
-void iplc_sim_process_pipeline_syscall()
+void iplc_sim_process_pipeline_syscall() //TYLER
 {
+	iplc_sim_push_pipeline_stage(); //Step 1: push stage
+
+	pipeline[FETCH].itype = SYSCALL;//Step 2: set itype and address
+	pipeline[FETCH].instruction_address = instruction_address;
     /* You must implement this function */
 }
 
-void iplc_sim_process_pipeline_nop()
+void iplc_sim_process_pipeline_nop() //TYLER
 {
+	iplc_sim_push_pipeline_stage(); //Step 1: push stage
+
+	pipeline[FETCH].itype = NOP;	//Step 2: set itype and address
+	pipeline[FETCH].instruction_address = instruction_address;
     /* You must implement this function */
 }
 
